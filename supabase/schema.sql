@@ -23,10 +23,54 @@ CREATE TABLE IF NOT EXISTS rooms (
     status TEXT NOT NULL DEFAULT 'VACANT',
     manual_override BOOLEAN NOT NULL DEFAULT FALSE,
     nominal_power NUMERIC NOT NULL,
+    category TEXT DEFAULT 'LAB',
+    icon TEXT DEFAULT 'Zap',
+    last_heartbeat TIMESTAMPTZ,
+    latitude NUMERIC DEFAULT 3.8615,
+    longitude NUMERIC DEFAULT 103.3156,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     
     CONSTRAINT chk_rooms_status CHECK (status IN ('OCCUPIED', 'VACANT')),
     CONSTRAINT chk_rooms_nominal_power CHECK (nominal_power > 0)
+);
+
+-- Table: room_bookings (Lecturer QR Code Booking & Session Assignment)
+CREATE TABLE IF NOT EXISTS room_bookings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    room_id UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    lecturer_name TEXT NOT NULL,
+    subject_code TEXT NOT NULL,
+    start_time TIMESTAMPTZ NOT NULL DEFAULT now(),
+    end_time TIMESTAMPTZ NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    push_endpoint TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT chk_booking_status CHECK (status IN ('ACTIVE', 'COMPLETED', 'EXPIRED', 'CANCELLED'))
+);
+
+-- Table: push_subscriptions
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id TEXT NOT NULL DEFAULT 'admin',
+    endpoint TEXT NOT NULL,
+    p256dh TEXT,
+    auth TEXT,
+    device_hint TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_push_subscriptions UNIQUE(user_id, endpoint)
+);
+
+-- Table: notifications
+CREATE TABLE IF NOT EXISTS notifications (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id TEXT NOT NULL DEFAULT 'admin',
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    type TEXT DEFAULT 'INFO',
+    module TEXT DEFAULT 'ENERGY',
+    link TEXT DEFAULT '/',
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Table: authorized_beacons
@@ -49,6 +93,7 @@ CREATE TABLE IF NOT EXISTS energy_readings (
     current NUMERIC NOT NULL,
     power NUMERIC NOT NULL,
     energy NUMERIC NOT NULL,
+    is_simulation BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     
     CONSTRAINT fk_energy_readings_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
@@ -67,13 +112,16 @@ CREATE TABLE IF NOT EXISTS savings_log (
     kwh_saved NUMERIC NOT NULL,
     rm_saved NUMERIC NOT NULL,
     co2_saved NUMERIC NOT NULL,
+    log_type TEXT NOT NULL DEFAULT 'SAVINGS',
+    is_simulation BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     
     CONSTRAINT fk_savings_log_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
     CONSTRAINT chk_savings_log_time_range CHECK (end_time >= start_time),
     CONSTRAINT chk_savings_log_kwh CHECK (kwh_saved >= 0),
     CONSTRAINT chk_savings_log_rm CHECK (rm_saved >= 0),
-    CONSTRAINT chk_savings_log_co2 CHECK (co2_saved >= 0)
+    CONSTRAINT chk_savings_log_co2 CHECK (co2_saved >= 0),
+    CONSTRAINT chk_savings_log_type CHECK (log_type IN ('SAVINGS', 'WASTAGE'))
 );
 
 -- =====================================================================
@@ -199,6 +247,53 @@ CREATE OR REPLACE TRIGGER trg_savings_log_insert
 AFTER INSERT ON savings_log
 FOR EACH ROW
 EXECUTE FUNCTION fn_notify_savings_telegram();
+
+-- Function & Trigger to auto-record savings and in-app notifications on room status change
+CREATE OR REPLACE FUNCTION fn_auto_record_savings()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_duration_hours NUMERIC;
+    v_kwh_saved NUMERIC;
+    v_tariff NUMERIC;
+    v_rm_saved NUMERIC;
+    v_co2_saved NUMERIC;
+    v_start_time TIMESTAMPTZ;
+BEGIN
+    IF (OLD.status = 'OCCUPIED' AND NEW.status = 'VACANT') THEN
+        v_start_time := COALESCE(OLD.updated_at, now() - INTERVAL '10 minutes');
+        v_duration_hours := GREATEST(0.001, EXTRACT(EPOCH FROM (now() - v_start_time)) / 3600.0);
+        v_kwh_saved := (COALESCE(OLD.nominal_power, 1200.0) / 1000.0) * v_duration_hours;
+        
+        SELECT COALESCE(value::numeric, 0.571) INTO v_tariff FROM settings WHERE key = 'tnb_tariff';
+        IF v_tariff IS NULL THEN
+            v_tariff := 0.571;
+        END IF;
+        
+        v_rm_saved := v_kwh_saved * v_tariff;
+        v_co2_saved := v_kwh_saved * 0.585;
+        
+        INSERT INTO savings_log (room_id, start_time, end_time, kwh_saved, rm_saved, co2_saved)
+        VALUES (OLD.id, v_start_time, now(), v_kwh_saved, v_rm_saved, v_co2_saved);
+        
+        INSERT INTO notifications (user_id, title, message, type, module, link)
+        VALUES (
+            'admin',
+            'Penjimatan Tenaga: ' || OLD.name,
+            'Lampu ditutup. Penjimatan ' || round(v_kwh_saved::numeric, 3) || ' kWh (RM ' || round(v_rm_saved::numeric, 2) || ') direkodkan.',
+            'SAVINGS',
+            'ENERGY',
+            '/logs'
+        );
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_rooms_status_savings ON rooms;
+CREATE TRIGGER trg_rooms_status_savings
+AFTER UPDATE OF status ON rooms
+FOR EACH ROW
+EXECUTE FUNCTION fn_auto_record_savings();
 
 -- =====================================================================
 -- 4. Initial Seed Data

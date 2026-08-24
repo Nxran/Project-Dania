@@ -21,9 +21,16 @@
 #define PZEM_RX_PIN 16
 #define PZEM_TX_PIN 17
 
-// Relay state logic
-#define RELAY_ON HIGH
-#define RELAY_OFF LOW
+// Relay state logic (Active-LOW: isyarat LOW untuk hidupkan lampu, HIGH untuk matikan)
+#define RELAY_ACTIVE_LOW true
+
+#if RELAY_ACTIVE_LOW
+  #define RELAY_ON LOW
+  #define RELAY_OFF HIGH
+#else
+  #define RELAY_ON HIGH
+  #define RELAY_OFF LOW
+#endif
 
 // Threshold Jarak Sensor Ultrasonic (dalam cm)
 // Tukar 200.0 kepada nilai yang anda mahukan (contoh: 100.0 untuk 1 meter, 50.0 untuk 50 cm)
@@ -33,8 +40,8 @@
 // 2. Supabase Configuration
 // ==========================================
 const String supabaseUrl = "https://yemzvtsuefaqwbazflqc.supabase.co";
-const String supabaseApiKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InllbXp2dHN1ZWZhcXdiYXpmlqcIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE0MTY0NDMsImV4cCI6MjA5Njk5MjQ0M30.uTzz39jVnZNIXnSPCPvCPKCIlYX-EFQuWQBrl0TR47Q";
-const String roomId = "65f75b06-1b35-45de-acaf-f94c09b426ce"; // Default: Makmal Fotogrametri (Tukar kepada '4b3d2863-2de4-47bb-ac1d-31bf0950d575' untuk Makmal Kartografi)
+const String supabaseApiKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InllbXp2dHN1ZWZhcXdiYXpmbHFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE0MTY0NDMsImV4cCI6MjA5Njk5MjQ0M30.uTzz39jVnZNIXnSPCPvCPKCIlYX-EFQuWQBrl0TR47Q";
+String roomId = "65f75b06-1b35-45de-acaf-f94c09b426ce"; // Default: Makmal Fotogrametri (Tukar kepada '4b3d2863-2de4-47bb-ac1d-31bf0950d575' untuk Makmal Kartografi)
 
 // ==========================================
 // 3. State Machine & Timing Variables
@@ -53,17 +60,19 @@ unsigned long vacancyTimerStart = 0;
 unsigned long lastPollTime = 0;
 unsigned long lastTelemetryTime = 0;
 unsigned long lastWifiRetryTime = 0;
+unsigned long lastHeartbeatTime = 0;
 
-const unsigned long POLL_INTERVAL = 3000;       // Poll settings every 3000 ms
+const unsigned long POLL_INTERVAL = 1500;       // Fast poll override/settings every 1500 ms (<2s response)
 const unsigned long TELEMETRY_INTERVAL = 10000;  // Post telemetry every 10000 ms
 const unsigned long WIFI_RETRY_INTERVAL = 15000; // Wi-Fi retry every 15000 ms
+const unsigned long HEARTBEAT_INTERVAL = 5000;  // Send heartbeat ping every 5000 ms (5s)
 
 // BLE Scan and Beacon Sync Timers
 unsigned long lastBleScanTime = 0;
 unsigned long lastBeaconSyncTime = 0;
 const unsigned long BLE_SCAN_INTERVAL = 30000;      // Scan every 30 seconds
 const unsigned long BEACON_SYNC_INTERVAL = 300000;  // Sync beacons every 5 minutes
-const int BLE_SCAN_DURATION = 3;                    // 3 seconds scan
+const int BLE_SCAN_DURATION = 2;                    // 2 seconds scan
 
 // BLE Presence State
 bool blePresenceDetected = false;
@@ -108,16 +117,14 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     }
 };
 
+// Static BLE callback to eliminate heap fragmentation and memory leaks
+static MyAdvertisedDeviceCallbacks bleCallbacks;
+
 void runBleScan() {
     Serial.println("[BLE] Starting scan...");
     blePresenceDetected = false; // Reset before scan
     
     BLEScan* pBLEScan = BLEDevice::getScan();
-    pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
-    pBLEScan->setActiveScan(true);
-    pBLEScan->setInterval(100);
-    pBLEScan->setWindow(99);
-    
     pBLEScan->start(BLE_SCAN_DURATION, false);
     pBLEScan->clearResults(); // free memory
     
@@ -230,6 +237,37 @@ void sendRoomStatusPatch(String status) {
     pendingStatus = status;
   }
   http.end();
+}
+
+void sendHeartbeatPing(unsigned long now) {
+  if (WiFi.status() != WL_CONNECTED) return;
+  
+  if (now - lastHeartbeatTime >= HEARTBEAT_INTERVAL || lastHeartbeatTime == 0) {
+    lastHeartbeatTime = now;
+    
+    WiFiClientSecure client;
+    client.setInsecure();
+    
+    HTTPClient http;
+    String url = supabaseUrl + "/rest/v1/rpc/fn_heartbeat";
+    http.begin(client, url);
+    setHttpHeaders(http);
+    http.setTimeout(4000);
+    
+    StaticJsonDocument<128> doc;
+    doc["p_room_id"] = roomId;
+    String payload;
+    serializeJson(doc, payload);
+    
+    int httpCode = http.POST(payload);
+    if (httpCode >= 200 && httpCode < 300) {
+      Serial.println("[HEARTBEAT] ESP32 Hardware Ping Sent to Supabase OK");
+    } else {
+      Serial.print("[HEARTBEAT] Ping failed, HTTP: ");
+      Serial.println(httpCode);
+    }
+    http.end();
+  }
 }
 
 void pollRoomSettings(unsigned long now) {
@@ -457,8 +495,13 @@ void setup() {
   
   digitalWrite(RELAY_PIN, RELAY_OFF);
   
-  // Initialize BLE Device
+  // Initialize BLE Device & Scan once
   BLEDevice::init("");
+  BLEScan* pBLEScan = BLEDevice::getScan();
+  pBLEScan->setAdvertisedDeviceCallbacks(&bleCallbacks);
+  pBLEScan->setActiveScan(true);
+  pBLEScan->setInterval(100);
+  pBLEScan->setWindow(99);
   
   // Initialize WiFiManager Captive Portal
   WiFiManager wm;
@@ -482,6 +525,7 @@ void loop() {
   unsigned long now = millis();
   
   handleWifiReconnection(now);
+  sendHeartbeatPing(now);
   
   if (WiFi.status() == WL_CONNECTED && statusUpdatePending) {
     sendRoomStatusPatch(pendingStatus);
