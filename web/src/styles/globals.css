@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: #ffffff;
+    --foreground: #0f172a;
+  }
+
+  .dark {
+    --background: #030712;
+    --foreground: #f9fafb;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    min-height: 100vh;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+}
+
+@keyframes pulse-glow-red {
+  0%, 100% {
+    filter: drop-shadow(0 0 4px rgba(239, 68, 68, 0.5)) drop-shadow(0 0 12px rgba(239, 68, 68, 0.2));
+    stroke: rgba(239, 68, 68, 0.8);
+  }
+  50% {
+    filter: drop-shadow(0 0 15px rgba(239, 68, 68, 0.9)) drop-shadow(0 0 30px rgba(239, 68, 68, 0.5));
+    stroke: rgba(239, 68, 68, 1);
+  }
+}
+
+@keyframes pulse-glow-green {
+  0%, 100% {
+    filter: drop-shadow(0 0 2px rgba(34, 197, 94, 0.3));
+    stroke: rgba(34, 197, 94, 0.6);
+  }
+  50% {
+    filter: drop-shadow(0 0 10px rgba(34, 197, 94, 0.7));
+    stroke: rgba(34, 197, 94, 0.9);
+  }
+}
+
+.glow-occupied {
+  animation: pulse-glow-red 2s infinite ease-in-out;
+}
+
+.glow-vacant {
+  animation: pulse-glow-green 3s infinite ease-in-out;
+}
+
+/* Glassmorphism sidebar and panels */
+.glass-panel {
+  background: rgba(17, 24, 39, 0.65);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.glass-sidebar {
+  background: rgba(10, 15, 30, 0.8);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
