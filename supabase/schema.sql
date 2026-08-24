@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS rooms (
     last_heartbeat TIMESTAMPTZ,
     latitude NUMERIC DEFAULT 3.8615,
     longitude NUMERIC DEFAULT 103.3156,
+    wiring_type TEXT NOT NULL DEFAULT 'SMART_AUTOMATED',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     
     CONSTRAINT chk_rooms_status CHECK (status IN ('OCCUPIED', 'VACANT')),
@@ -294,6 +295,44 @@ CREATE TRIGGER trg_rooms_status_savings
 AFTER UPDATE OF status ON rooms
 FOR EACH ROW
 EXECUTE FUNCTION fn_auto_record_savings();
+
+-- Function to record ESP32 hardware online heartbeat
+CREATE OR REPLACE FUNCTION fn_heartbeat(p_room_id UUID)
+RETURNS JSON
+SECURITY DEFINER
+LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE rooms 
+    SET last_heartbeat = now() 
+    WHERE id = p_room_id;
+    
+    RETURN json_build_object('success', true, 'timestamp', now());
+END;
+$$;
+
+-- Function to clear simulation / demo test data
+CREATE OR REPLACE FUNCTION fn_clear_simulation_data()
+RETURNS JSON
+SECURITY DEFINER
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_readings_deleted INT;
+    v_savings_deleted INT;
+BEGIN
+    DELETE FROM energy_readings WHERE is_simulation = TRUE;
+    GET DIAGNOSTICS v_readings_deleted = ROW_COUNT;
+    
+    DELETE FROM savings_log WHERE is_simulation = TRUE;
+    GET DIAGNOSTICS v_savings_deleted = ROW_COUNT;
+    
+    RETURN json_build_object(
+        'success', true,
+        'readings_deleted', v_readings_deleted,
+        'savings_deleted', v_savings_deleted,
+        'message', 'Data simulasi berjaya dibersihkan.'
+    );
+END;
+$$;
 
 -- =====================================================================
 -- 4. Initial Seed Data
