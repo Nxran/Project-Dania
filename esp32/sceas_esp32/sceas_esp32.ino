@@ -22,7 +22,7 @@
 #define PZEM_TX_PIN 17
 
 // Relay state logic (Active-LOW: isyarat LOW untuk hidupkan lampu, HIGH untuk matikan)
-#define RELAY_ACTIVE_LOW true
+#define RELAY_ACTIVE_LOW false
 
 #if RELAY_ACTIVE_LOW
   #define RELAY_ON LOW

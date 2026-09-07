@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Bell, CheckCheck, Loader2, Zap, ShieldAlert, Info, ArrowRight, Volume2, VolumeX } from 'lucide-react';
+import { Bell, CheckCheck, Loader2, Zap, ShieldAlert, Info, ArrowRight, Volume2, VolumeX, Sparkles } from 'lucide-react';
 import { supabase } from '@/utils/supabase/client';
 import Link from 'next/link';
+import { usePushNotifications } from '@/hooks/usePushNotifications';
+import NotificationToast from './NotificationToast';
 
 export interface InAppNotification {
   id: string;
@@ -45,8 +47,27 @@ export default function NotificationBell() {
   const [notifications, setNotifications] = useState<InAppNotification[]>([]);
   const [markingAll, setMarkingAll] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [activeToast, setActiveToast] = useState<InAppNotification | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const prevCountRef = useRef<number>(0);
+  const isFirstLoadRef = useRef(true);
+  const lastNotifIdRef = useRef<string | null>(null);
+
+  const { sendBrowserNotification } = usePushNotifications();
+
+  const triggerNotificationAlert = useCallback(
+    (notif: InAppNotification) => {
+      setActiveToast(notif);
+      if (soundEnabled) {
+        playChime();
+      }
+      sendBrowserNotification(`⚡ ${notif.title}`, {
+        body: notif.message,
+        tag: notif.id,
+      });
+    },
+    [soundEnabled, sendBrowserNotification]
+  );
 
   const fetchNotifications = useCallback(async () => {
     try {
@@ -59,22 +80,59 @@ export default function NotificationBell() {
       if (error) throw error;
       if (data) {
         const unread = data.filter((n: InAppNotification) => !n.is_read).length;
-        if (unread > prevCountRef.current && prevCountRef.current !== 0 && soundEnabled) {
-          playChime();
+
+        if (isFirstLoadRef.current) {
+          isFirstLoadRef.current = false;
+          if (data.length > 0) {
+            lastNotifIdRef.current = data[0].id;
+          }
+          prevCountRef.current = unread;
+        } else {
+          // Detect new incoming unread notification
+          if (data.length > 0 && data[0].id !== lastNotifIdRef.current && !data[0].is_read) {
+            lastNotifIdRef.current = data[0].id;
+            triggerNotificationAlert(data[0] as InAppNotification);
+          } else if (unread > prevCountRef.current && soundEnabled) {
+            playChime();
+          }
+          prevCountRef.current = unread;
         }
-        prevCountRef.current = unread;
+
         setNotifications(data as InAppNotification[]);
       }
     } catch (err) {
       console.error('Error fetching notifications:', err);
     }
-  }, [soundEnabled]);
+  }, [soundEnabled, triggerNotificationAlert]);
 
   useEffect(() => {
     fetchNotifications();
     const interval = setInterval(fetchNotifications, 4000);
     return () => clearInterval(interval);
   }, [fetchNotifications]);
+
+  // Realtime subscription for instant 0ms pop-up response
+  useEffect(() => {
+    const channel = supabase
+      .channel('notifications-realtime-sub')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'notifications' },
+        (payload) => {
+          const newNotif = payload.new as InAppNotification;
+          if (newNotif) {
+            lastNotifIdRef.current = newNotif.id;
+            setNotifications((prev) => [newNotif, ...prev.filter((n) => n.id !== newNotif.id)]);
+            triggerNotificationAlert(newNotif);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [triggerNotificationAlert]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -109,6 +167,21 @@ export default function NotificationBell() {
     }
   };
 
+  const handleTestNotification = () => {
+    const testNotif: InAppNotification = {
+      id: 'test-' + Date.now(),
+      user_id: 'admin',
+      title: 'Penjimatan Tenaga: Makmal Fotogrametri',
+      message: 'Lampu dimatikan secara automatik. Sesi penjimatan 0.005 kWh (RM 0.01) direkodkan.',
+      type: 'SAVINGS',
+      module: 'ENERGY',
+      link: '/logs',
+      is_read: false,
+      created_at: new Date().toISOString(),
+    };
+    triggerNotificationAlert(testNotif);
+  };
+
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const todayNotifs = notifications.filter(n => new Date(n.created_at) >= today);
@@ -126,55 +199,70 @@ export default function NotificationBell() {
   };
 
   return (
-    <div className="relative" ref={dropdownRef}>
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="relative p-2.5 rounded-xl bg-gray-900/60 hover:bg-gray-800/60 border border-gray-800/80 text-gray-300 hover:text-white transition"
-        title="Notifikasi Sistem"
-      >
-        <Bell className="w-5 h-5" />
-        {unreadCount > 0 && (
-          <span className="absolute -top-1 -right-1 flex h-4.5 min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-extrabold text-white shadow-lg animate-pulse">
-            {unreadCount > 9 ? '9+' : unreadCount}
-          </span>
-        )}
-      </button>
+    <>
+      <NotificationToast
+        notification={activeToast}
+        onClose={() => setActiveToast(null)}
+      />
 
-      {isOpen && (
-        <div className="absolute right-0 mt-3 w-80 sm:w-96 rounded-2xl bg-gray-900/95 border border-gray-800/80 shadow-2xl backdrop-blur-xl z-50 overflow-hidden text-gray-200 animate-fade-in">
-          {/* Header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800/60 bg-gray-950/60">
-            <div className="flex items-center gap-2">
-              <Bell className="w-4 h-4 text-emerald-400" />
-              <span className="text-xs font-bold uppercase tracking-wider text-gray-200">Notifikasi</span>
-              {unreadCount > 0 && (
-                <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-rose-500/20 text-rose-400">
-                  {unreadCount} baharu
-                </span>
-              )}
-            </div>
+      <div className="relative" ref={dropdownRef}>
+        <button
+          onClick={() => setIsOpen(!isOpen)}
+          className="relative p-2.5 rounded-xl bg-gray-900/60 hover:bg-gray-800/60 border border-gray-800/80 text-gray-300 hover:text-white transition"
+          title="Notifikasi Sistem"
+        >
+          <Bell className="w-5 h-5" />
+          {unreadCount > 0 && (
+            <span className="absolute -top-1 -right-1 flex h-4.5 min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-extrabold text-white shadow-lg animate-pulse">
+              {unreadCount > 9 ? '9+' : unreadCount}
+            </span>
+          )}
+        </button>
 
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setSoundEnabled(!soundEnabled)}
-                className="p-1 text-gray-400 hover:text-gray-200 rounded transition"
-                title={soundEnabled ? 'Matikan Bunyi' : 'Hidupkan Bunyi'}
-              >
-                {soundEnabled ? <Volume2 className="w-3.5 h-3.5 text-emerald-400" /> : <VolumeX className="w-3.5 h-3.5 text-gray-500" />}
-              </button>
+        {isOpen && (
+          <div className="absolute right-0 mt-3 w-80 sm:w-96 rounded-2xl bg-gray-900/95 border border-gray-800/80 shadow-2xl backdrop-blur-xl z-50 overflow-hidden text-gray-200 animate-fade-in">
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800/60 bg-gray-950/60">
+              <div className="flex items-center gap-2">
+                <Bell className="w-4 h-4 text-emerald-400" />
+                <span className="text-xs font-bold uppercase tracking-wider text-gray-200">Notifikasi</span>
+                {unreadCount > 0 && (
+                  <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-rose-500/20 text-rose-400">
+                    {unreadCount} baharu
+                  </span>
+                )}
+              </div>
 
-              {unreadCount > 0 && (
+              <div className="flex items-center gap-1.5">
                 <button
-                  onClick={handleMarkAllRead}
-                  disabled={markingAll}
-                  className="text-[11px] font-semibold text-gray-400 hover:text-emerald-400 flex items-center gap-1 transition"
+                  onClick={handleTestNotification}
+                  className="p-1 px-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold flex items-center gap-1 transition"
+                  title="Uji Notifikasi Pop-up Gaya WhatsApp"
                 >
-                  {markingAll ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCheck className="w-3 h-3" />}
-                  <span>Tanda semua</span>
+                  <Sparkles className="w-3 h-3 text-emerald-400" />
+                  <span className="hidden sm:inline">Uji Pop-up</span>
                 </button>
-              )}
+
+                <button
+                  onClick={() => setSoundEnabled(!soundEnabled)}
+                  className="p-1 text-gray-400 hover:text-gray-200 rounded transition"
+                  title={soundEnabled ? 'Matikan Bunyi' : 'Hidupkan Bunyi'}
+                >
+                  {soundEnabled ? <Volume2 className="w-3.5 h-3.5 text-emerald-400" /> : <VolumeX className="w-3.5 h-3.5 text-gray-500" />}
+                </button>
+
+                {unreadCount > 0 && (
+                  <button
+                    onClick={handleMarkAllRead}
+                    disabled={markingAll}
+                    className="text-[11px] font-semibold text-gray-400 hover:text-emerald-400 flex items-center gap-1 transition ml-1"
+                  >
+                    {markingAll ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCheck className="w-3 h-3" />}
+                    <span>Tanda semua</span>
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
 
           {/* Body List */}
           <div className="max-h-80 overflow-y-auto divide-y divide-gray-800/40 text-xs">
@@ -269,5 +357,6 @@ export default function NotificationBell() {
         </div>
       )}
     </div>
-  );
+  </>
+);
 }
