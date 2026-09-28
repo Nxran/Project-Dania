@@ -9,8 +9,6 @@
 #include <BLEUtils.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
-#include <WiFiManager.h> // Dynamic WiFi Captive Portal Library
-
 // ==========================================
 // 1. Hardware Pin Definitions
 // ==========================================
@@ -33,11 +31,16 @@
 #endif
 
 // Threshold Jarak Sensor Ultrasonic (dalam cm)
-// Tukar 200.0 kepada nilai yang anda mahukan (contoh: 100.0 untuk 1 meter, 50.0 untuk 50 cm)
 #define MAX_DISTANCE_CM 30.0
 
 // ==========================================
-// 2. Supabase Configuration
+// 2. Wi-Fi Configuration
+// ==========================================
+const char* ssid = "Dania";            // <-- Tukar nama Wi-Fi / Hotspot di sini
+const char* password = "password123";  // <-- Tukar kata laluan Wi-Fi di sini
+
+// ==========================================
+// 3. Supabase Configuration
 // ==========================================
 const String supabaseUrl = "https://yemzvtsuefaqwbazflqc.supabase.co";
 const String supabaseApiKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InllbXp2dHN1ZWZhcXdiYXpmbHFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE0MTY0NDMsImV4cCI6MjA5Njk5MjQ0M30.uTzz39jVnZNIXnSPCPvCPKCIlYX-EFQuWQBrl0TR47Q";
@@ -414,8 +417,9 @@ void handleWifiReconnection(unsigned long now) {
   if (WiFi.status() != WL_CONNECTED) {
     if (now - lastWifiRetryTime >= WIFI_RETRY_INTERVAL) {
       lastWifiRetryTime = now;
-      Serial.println("[WIFI] Reconnecting using saved credentials...");
-      WiFi.reconnect();
+      Serial.println("[WIFI] Reconnecting to Wi-Fi...");
+      WiFi.disconnect();
+      WiFi.begin(ssid, password);
     }
   } else {
     lastWifiRetryTime = now;
@@ -503,19 +507,27 @@ void setup() {
   pBLEScan->setInterval(100);
   pBLEScan->setWindow(99);
   
-  // Initialize WiFiManager Captive Portal
-  WiFiManager wm;
-  wm.setConfigPortalTimeout(180); // 3 minutes timeout for AP setup mode
+  // Connect to Wi-Fi
+  Serial.print("[WIFI] Connecting to ");
+  Serial.println(ssid);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
   
-  Serial.println("[WIFI] Starting WiFiManager autoConnect...");
-  bool res = wm.autoConnect("SCEAS-Setup-AP");
+  unsigned long startWifiWait = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startWifiWait < 12000) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
   
-  if (!res) {
-    Serial.println("[WIFI] Failed to connect or Captive Portal timed out.");
-  } else {
+  if (WiFi.status() == WL_CONNECTED) {
     Serial.println("[WIFI] Connected to Wi-Fi successfully!");
+    Serial.print("[WIFI] IP Address: ");
+    Serial.println(WiFi.localIP());
     fetchAuthorizedBeacons();
     runBleScan();
+  } else {
+    Serial.println("[WIFI] Initial connection timed out. Will retry in background.");
   }
   
   bootRecovery();
